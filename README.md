@@ -24,6 +24,10 @@ PySide6 desktop application for multi-sample room-temperature and temperature-de
 7. Edit Condition, Sample ID and Temperature in the table as needed.
 8. Click **Batch fit**, inspect plots, then **Export**.
 
+Batch fitting runs one spectrum at a time on a background thread. The progress panel reports the current file, completed/total count, percentage, last-file duration, and estimated time remaining. **Cancel Batch Fit** stops at the next file boundary and keeps every completed result. A durable JSON Lines checkpoint and a phased timing log are written after each attempted file under the application's local data `batch_runs` directory; the status bar reports completion while the checkpoint path is also available in the batch summary.
+
+Cancellation cannot interrupt a `scipy.optimize.curve_fit` call already in progress. It takes effect immediately after that file succeeds or fails, which avoids leaving a partially constructed scientific result.
+
 The daily launcher uses only `.venv\Scripts\python.exe`. It never falls back to system Python and does not reinstall packages at every startup. Run `setup_windows.bat` again only when installing for the first time or repairing the environment.
 
 ## Windows setup troubleshooting

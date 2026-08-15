@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Literal
 import json, math
+from time import perf_counter
 
 import numpy as np
 import pandas as pd
@@ -255,14 +256,23 @@ def _initial_peaks(x,y,n_peaks,model):
         else: p += [c,fw*0.7,fw*0.3,h]
     return p
 
-def fit_spectrum(spec: PLSpectrum, *, model: str="Pseudo-Voigt", n_peaks: int=1, baseline_mode: str="Constant", fit_range_ev: tuple[float,float]|None=None, use_jacobian: bool=True, initial: list[float]|None=None, instrument_fwhm_mev: float=0.0) -> SpectrumFitResult:
+def _add_timing(timings: dict[str, float] | None, stage: str, started: float) -> None:
+    if timings is not None:
+        timings[stage] = timings.get(stage, 0.0) + perf_counter() - started
+
+
+def fit_spectrum(spec: PLSpectrum, *, model: str="Pseudo-Voigt", n_peaks: int=1, baseline_mode: str="Constant", fit_range_ev: tuple[float,float]|None=None, use_jacobian: bool=True, initial: list[float]|None=None, instrument_fwhm_mev: float=0.0, timings: dict[str,float]|None=None) -> SpectrumFitResult:
     x=spec.photon_energy_ev.copy(); y=(spec.intensity_energy if use_jacobian else spec.intensity_wavelength).copy()
     if fit_range_ev:
         lo,hi=sorted(fit_range_ev); m=(x>=lo)&(x<=hi); x,y=x[m],y[m]
     if len(x)<max(15,5*n_peaks): raise ValueError("Too few points in fitting range.")
     y=np.asarray(y,float)
     n=_npp(model); nb=_baseline_count(baseline_mode)
-    p0=list(initial) if initial else _initial_peaks(x,y,n_peaks,model)
+    started=perf_counter()
+    try:
+        p0=list(initial) if initial else _initial_peaks(x,y,n_peaks,model)
+    finally:
+        _add_timing(timings,"initial_guess",started)
     base0=float(np.percentile(y,3))
     if baseline_mode=="Constant": p0 += [base0]
     elif baseline_mode=="Linear": p0 += [base0,0.0]
@@ -278,7 +288,11 @@ def fit_spectrum(spec: PLSpectrum, *, model: str="Pseudo-Voigt", n_peaks: int=1,
     if baseline_mode=="Constant": lower += [-ymax*5]; upper += [ymax*5]
     elif baseline_mode=="Linear": lower += [-ymax*5,-ymax*50/span]; upper += [ymax*5,ymax*50/span]
     func=_model_func(model,n_peaks,baseline_mode)
-    popt,pcov=curve_fit(func,x,y,p0=p0,bounds=(lower,upper),maxfev=100000)
+    started=perf_counter()
+    try:
+        popt,pcov=curve_fit(func,x,y,p0=p0,bounds=(lower,upper),maxfev=100000)
+    finally:
+        _add_timing(timings,"optimization",started)
     perr=np.sqrt(np.maximum(np.diag(pcov),0))
     yfit=func(x,*popt); resid=y-yfit
     ssr=float(np.sum(resid**2)); sst=float(np.sum((y-y.mean())**2)); r2=1-ssr/sst if sst>0 else 0
@@ -305,11 +319,11 @@ def fit_spectrum(spec: PLSpectrum, *, model: str="Pseudo-Voigt", n_peaks: int=1,
     return SpectrumFitResult(spec.temperature_k,model,n_peaks,peaks,x,y,yfit,comps,baseline,resid,float(r2),float(adj),rmse,red,aic,aicc,bic,warnings)
 
 
-def fit_best_model(spec: PLSpectrum, *, models=("Gaussian","Pseudo-Voigt","Voigt"), max_peaks=2, baseline_mode="Constant", fit_range_ev=None, use_jacobian=True):
+def fit_best_model(spec: PLSpectrum, *, models=("Gaussian","Pseudo-Voigt","Voigt"), max_peaks=2, baseline_mode="Constant", fit_range_ev=None, use_jacobian=True, timings: dict[str,float]|None=None):
     results=[]
     for model in models:
         for n in range(1,max_peaks+1):
-            try: results.append(fit_spectrum(spec,model=model,n_peaks=n,baseline_mode=baseline_mode,fit_range_ev=fit_range_ev,use_jacobian=use_jacobian))
+            try: results.append(fit_spectrum(spec,model=model,n_peaks=n,baseline_mode=baseline_mode,fit_range_ev=fit_range_ev,use_jacobian=use_jacobian,timings=timings))
             except Exception: pass
     if not results: raise RuntimeError("All fitting models failed.")
     results.sort(key=lambda r:r.bic)
