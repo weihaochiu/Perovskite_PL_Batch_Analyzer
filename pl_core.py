@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Literal
 import json, math
@@ -24,6 +24,7 @@ class PLSpectrum:
     condition: str
     sample_id: str
     source_name: str = ""
+    metadata: dict[str, str] = field(default_factory=dict)
 
 @dataclass
 class PeakResult:
@@ -79,8 +80,71 @@ class TemperatureFitResult:
     warnings: list[str]
 
 
+def read_asc(path: str | Path) -> pd.DataFrame:
+    """Read the leading two-column spectrum block from an ASCII ASC file."""
+    path = Path(path)
+    try:
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
+    except (OSError, UnicodeError) as exc:
+        raise ValueError(f"無法讀取 ASC 檔案：{exc}") from exc
+
+    wavelength = []
+    intensity = []
+    metadata: dict[str, str] = {}
+    data_started = False
+    data_finished = False
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            if data_started:
+                data_finished = True
+            continue
+
+        parts = stripped.split()
+        numeric_pair = False
+        if not data_finished and len(parts) == 2:
+            try:
+                x_value, y_value = (float(value) for value in parts)
+                numeric_pair = math.isfinite(x_value) and math.isfinite(y_value)
+            except ValueError:
+                numeric_pair = False
+
+        if numeric_pair:
+            data_started = True
+            wavelength.append(x_value)
+            intensity.append(y_value)
+            continue
+
+        data_finished = True
+        if ":" in stripped:
+            key, value = stripped.split(":", 1)
+            key, value = key.strip(), value.strip()
+            if key:
+                metadata[key] = value
+
+    if not wavelength:
+        raise ValueError("找不到位於檔案開頭、由兩個有限數值組成的光譜資料列。")
+    if len(wavelength) != len(intensity):
+        raise ValueError("波長與 PL 強度欄位的資料長度不一致。")
+    if len(wavelength) < 12:
+        raise ValueError(f"有效光譜點不足：找到 {len(wavelength)} 點，至少需要 12 點。")
+
+    df = pd.DataFrame(
+        {
+            "Wavelength_nm": np.asarray(wavelength, dtype=float),
+            "PL_Intensity": np.asarray(intensity, dtype=float),
+        }
+    )
+    df.attrs["metadata"] = metadata
+    df.attrs["source_format"] = "ASC"
+    return df
+
+
 def read_table(path: str | Path) -> pd.DataFrame:
     path = Path(path)
+    if path.suffix.lower() == ".asc":
+        return read_asc(path)
     if path.suffix.lower() in {".xlsx", ".xls"}:
         df = pd.read_excel(path)
     else:
@@ -124,7 +188,8 @@ def prepare_spectrum(df: pd.DataFrame, x_column: str, y_column: str, *, x_type: 
     ev=compact.ev.to_numpy(); wl=compact.wl.to_numpy(); y=compact.y.to_numpy()
     # spectral density transformation |d lambda / dE| = hc / E^2
     y_ev=y*HC_EV_NM/np.square(ev)
-    return PLSpectrum(wl,ev,y,y_ev,float(temperature_k),condition,sample_id,source_name)
+    metadata=dict(df.attrs.get("metadata", {}))
+    return PLSpectrum(wl,ev,y,y_ev,float(temperature_k),condition,sample_id,source_name,metadata)
 
 
 def gaussian(x, center, fwhm, height):

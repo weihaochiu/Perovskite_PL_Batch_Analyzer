@@ -10,7 +10,7 @@ PySide6 desktop application for multi-sample room-temperature and temperature-de
 - Temperature fits: linear, Varshni, Bose–Einstein, acoustic/LO/full phonon linewidth, one-/two-channel Arrhenius PL quenching
 - Multi-sample room-temperature overlays and comparisons
 - Multi-sample temperature series, contour maps and parameter comparison plots
-- CSV/XLS/XLSX/TXT/DAT input, `.plproj` projects, Excel/CSV/JSON/300 dpi PNG/vector PDF export
+- CSV/XLS/XLSX/TXT/DAT/ASC input, `.plproj` projects, Excel/CSV/JSON/300 dpi PNG/vector PDF export
 - Wavelength-to-energy Jacobian correction
 
 ## Windows quick start
@@ -45,6 +45,8 @@ Wavelength_nm,PL_Intensity
 ```
 
 Recommended filenames: `AS_80K.csv`, `AS_100K.csv`, `CP20_80K.csv`.
+
+ASC files may contain a leading whitespace-delimited wavelength/intensity block followed by blank lines and `Key: Value` instrument metadata. The metadata is preserved in JSON output and the Excel `Spectrum_Metadata` worksheet.
 
 ## Scientific cautions
 

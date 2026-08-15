@@ -13,6 +13,8 @@ from export_manager import export_all
 
 APP_VERSION="0.4.0"
 HEADERS=["Use","Export","Condition","Sample ID","Temperature (K)","Direction","Output code","File","X column","PL column","Status"]
+SUPPORTED_SPECTRUM_EXTENSIONS={".asc",".csv",".dat",".tsv",".txt",".xls",".xlsx"}
+SPECTRUM_FILE_FILTER="Spectra (*.csv *.txt *.dat *.tsv *.xls *.xlsx *.asc);;ASC files (*.asc)"
 
 class DropTable(QTableWidget):
     def __init__(self,parent): super().__init__(parent); self.setAcceptDrops(True)
@@ -57,17 +59,17 @@ class MainWindow(QMainWindow):
         self.tabs=QTabWidget(); rv.addWidget(self.tabs,3); splitter.addWidget(right); splitter.setSizes([330,1150])
         self.status=QStatusBar(); self.setStatusBar(self.status)
     def add_files(self):
-        p,_=QFileDialog.getOpenFileNames(self,"Add spectra","","Spectra (*.csv *.txt *.dat *.tsv *.xls *.xlsx)"); self.add_paths(p)
+        p,_=QFileDialog.getOpenFileNames(self,"Add spectra","",SPECTRUM_FILE_FILTER); self.add_paths(p)
     def add_paths(self,paths):
         for path in paths:
-            if not Path(path).suffix.lower() in {".csv",".txt",".dat",".tsv",".xls",".xlsx"}: continue
+            if Path(path).suffix.lower() not in SUPPORTED_SPECTRUM_EXTENSIONS: continue
             try:
                 df=read_table(path); cols=numeric_columns(df)
                 if len(cols)<2: raise ValueError("No two numeric columns found")
                 stem=Path(path).stem; tm=re.search(r"(?<!\d)(\d+(?:\.\d+)?)\s*[Kk](?!\w)",stem); T=float(tm.group(1)) if tm else 300.0
                 condition=re.sub(r"[_-]?\d+(?:\.\d+)?\s*[Kk].*","",stem).strip("_- ") or stem
                 rec={"use":True,"export":True,"condition":condition,"sample_id":condition,"temperature":T,"direction":"Isothermal","code":stem,"path":str(path),"x":cols[0],"y":cols[1],"status":"Ready"}; self.records.append(rec); self._add_row(rec)
-            except Exception as exc: QMessageBox.warning(self,"Import failed",f"{path}\n{exc}")
+            except Exception as exc: QMessageBox.warning(self,"匯入失敗",f"檔案：{Path(path).name}\n原因：{exc}")
     def _add_row(self,r):
         row=self.table.rowCount(); self.table.insertRow(row)
         for c,key in enumerate(["use","export"]):
@@ -103,7 +105,7 @@ class MainWindow(QMainWindow):
                     maxp=2 if self.npeaks.currentText().startswith("Auto") else int(self.npeaks.currentText()); res,_=fit_best_model(spec,models=models,max_peaks=maxp,baseline_mode=self.baseline.currentText(),fit_range_ev=fitrange,use_jacobian=self.jacobian.isChecked())
                 else: res=fit_spectrum(spec,model=self.model.currentText(),n_peaks=int(self.npeaks.currentText()),baseline_mode=self.baseline.currentText(),fit_range_ev=fitrange,use_jacobian=self.jacobian.isChecked(),instrument_fwhm_mev=self.inst.value())
                 self.results.append((r["code"],spec,res)); r["status"]="OK"; self.table.item(i,10).setText("OK")
-            except Exception as exc: r["status"]="Failed"; self.table.item(i,10).setText("Failed"); errors.append(f"{r['code']}: {exc}")
+            except Exception as exc: r["status"]="Failed"; self.table.item(i,10).setText("Failed"); errors.append(f"檔案 {Path(r['path']).name}：{exc}")
         groups={}
         for label,spec,res in self.results: groups.setdefault(spec.condition,[]).append((label,spec,res))
         for cond,items in groups.items():
@@ -113,7 +115,7 @@ class MainWindow(QMainWindow):
                 try:self.tempfits[cond][kind]=fit_temperature(T,vals,kind,model)
                 except Exception as exc:errors.append(f"{cond} {kind}: {exc}")
         self.refresh_tabs(); self.status.showMessage(f"Completed: {len(self.results)} spectra")
-        if errors: QMessageBox.warning(self,"Completed with warnings","\n".join(errors[:20]))
+        if errors: QMessageBox.warning(self,"完成，但有警告","下列檔案或分析未完成：\n"+"\n".join(errors[:20]))
     def refresh_tabs(self):
         self.tabs.clear(); self.figures={}
         if not self.results:return

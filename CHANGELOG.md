@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Added integrated ASC spectrum import with instrument metadata preservation, mixed-format batch support, and validation for malformed ASC files.
 - Added a dedicated Windows setup script for first installation and environment repair.
 - Kept the daily Windows launcher isolated from environment creation and dependency installation.
 - Added development requirements and repeatable isolated tests for Windows setup and launcher behavior.
