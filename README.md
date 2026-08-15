@@ -17,10 +17,21 @@ PySide6 desktop application for multi-sample room-temperature and temperature-de
 
 1. Install 64-bit Python 3.11 and select **Add Python to PATH**.
 2. Extract the ZIP.
-3. Double-click `run_windows.bat`.
-4. Add spectra. Filenames containing `80K`, `300K`, etc. are parsed automatically.
-5. Edit Condition, Sample ID and Temperature in the table as needed.
-6. Click **Batch fit**, inspect plots, then **Export**.
+3. For the first installation, double-click `setup_windows.bat`. It creates the repository-local `.venv` and installs the runtime requirements.
+4. After setup succeeds, double-click `run_windows.bat`.
+5. For normal use after the first installation, only run `run_windows.bat`.
+6. Add spectra. Filenames containing `80K`, `300K`, etc. are parsed automatically.
+7. Edit Condition, Sample ID and Temperature in the table as needed.
+8. Click **Batch fit**, inspect plots, then **Export**.
+
+The daily launcher uses only `.venv\Scripts\python.exe`. It never falls back to system Python and does not reinstall packages at every startup. Run `setup_windows.bat` again only when installing for the first time or repairing the environment.
+
+## Windows setup troubleshooting
+
+- **Python 3.11 not found:** Install 64-bit Python 3.11, enable **Add Python to PATH**, close the old Command Prompt window, and run `setup_windows.bat` again. The setup rejects incompatible Python versions.
+- **`.venv` does not exist:** Run `setup_windows.bat` before `run_windows.bat`.
+- **`.venv` is damaged or uses the wrong Python version:** The setup does not delete or overwrite an existing environment. Move or remove `.venv` manually, then run `setup_windows.bat` to create a clean Python 3.11 environment.
+- **Requirements installation fails:** Read the pip error shown above the setup message, check the network connection, and rerun `setup_windows.bat`. The window remains open so the original error and exit code can be inspected.
 
 ## Input examples
 

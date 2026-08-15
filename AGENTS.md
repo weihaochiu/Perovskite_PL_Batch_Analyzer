@@ -10,10 +10,13 @@ This repository contains a Windows-oriented PySide6 desktop application for batc
 - `pl_core.py`: spectrum parsing and preparation, wavelength/energy conversion, peak fitting, model selection, temperature-dependent fitting, statistics, and result data structures. Treat changes here as scientific-calculation changes.
 - `plotting.py`: Matplotlib figure creation for fits, overlays, parameter trends, and contour maps.
 - `export_manager.py`: Excel, CSV, JSON, PNG, and PDF export.
-- `tests/test_core.py`: current pytest coverage for a Gaussian peak fit and a linear temperature fit.
+- `tests/test_core.py`: pytest coverage for a Gaussian peak fit and a linear temperature fit.
+- `tests/test_windows_batch_files.py`: isolated Windows batch-file tests using temporary directories and stub executables; these tests must never modify the real `.venv`.
 - `examples/`: tracked example CSV spectra using `Wavelength_nm,PL_Intensity` columns and temperature-bearing filenames.
-- `requirements.txt`: project dependency source of truth.
-- `run_windows.bat`: end-user Windows launcher. It may create `.venv`, install requirements, and start `app.py`; do not use it as a routine Codex validation command because it mutates the environment and launches the GUI.
+- `requirements.txt`: runtime dependency source of truth.
+- `requirements-dev.txt`: development and test dependencies; it includes `requirements.txt` and pytest.
+- `setup_windows.bat`: first-installation and environment-repair entry point. It may create `.venv` and install runtime requirements; do not use it as a routine Codex validation command because it can modify the environment.
+- `run_windows.bat`: daily end-user launcher. It only validates the repository-local `.venv` and starts `app.py`; it must not create environments or install packages.
 - `README.md` and `CHANGELOG.md`: user-facing usage, scientific cautions, and release information.
 
 Do not invent packages, services, test suites, build systems, or application layers that are not present in the working tree. Reinspect the repository when its structure changes.
@@ -40,11 +43,12 @@ The repository-local Windows virtual environment is `.venv\`. The repository doc
 - Run Python with `.venv\Scripts\python.exe`.
 - Run pip with `.venv\Scripts\python.exe -m pip`.
 - Run pytest with `.venv\Scripts\python.exe -m pytest`.
+- Install the formal development and test dependencies with `.venv\Scripts\python.exe -m pip install -r requirements-dev.txt` only when the user explicitly requests or approves dependency installation.
 - Do not install project dependencies with system Python.
 - Do not delete, recreate, replace, or modify files inside `.venv` unless the user explicitly requests environment repair.
 - Never commit `.venv`.
-- Use `requirements.txt` as the dependency source of truth. If a task genuinely requires a new dependency, update `requirements.txt` in the same change and explain why.
-- Do not silently install packages just to make a check pass. Report a missing dependency, or obtain the user's approval when installation is needed.
+- Use `requirements.txt` as the runtime dependency source of truth and `requirements-dev.txt` for development-only tools. If a task genuinely requires a new dependency, update the appropriate file in the same change and explain why.
+- Do not silently install packages just to make a check pass. In particular, if the current `.venv` lacks pytest, report that fact instead of running the setup script or installing development requirements without approval.
 
 ## Git and file safety
 
@@ -77,6 +81,8 @@ Primary test command:
 ```powershell
 .venv\Scripts\python.exe -m pytest
 ```
+
+If pytest is not installed, report the skipped test run. Do not invoke `setup_windows.bat` or install `requirements-dev.txt` silently as a workaround.
 
 Basic syntax and import checks:
 
