@@ -11,7 +11,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas,
 
 from batch_worker import BatchFitWorker,append_jsonl
 from pl_core import read_table,numeric_columns
-from plotting import selected_fit_figure,overlay_figure,parameter_figure,contour_figure
+from plotting import categorical_parameter_figure,contour_figure,overlay_figure,parameter_figure,selected_fit_figure
 from export_manager import export_all
 
 APP_VERSION="0.4.0"
@@ -198,6 +198,19 @@ class MainWindow(QMainWindow):
                 series.append((cond,T,y));
                 if cond in self.tempfits and kind in self.tempfits[cond]:fits[cond]=self.tempfits[cond][kind]
             self._add_fig(kind,parameter_figure(series,ylabel,title,fits),kind.lower().replace(" ","_"))
+        condition_plots=[
+            ("Peak energy by condition","peak_energy_by_condition","Peak energy (eV)","Peak energy vs condition",lambda peak:peak.center_ev),
+            ("FWHM by condition","fwhm_by_condition","FWHM (meV)","FWHM vs condition",lambda peak:peak.fwhm_mev),
+            ("Peak intensity by condition","peak_intensity_by_condition","Peak intensity (a.u.)","Peak intensity vs condition",lambda peak:peak.height),
+        ]
+        plot_warnings=[]
+        for tab,key,ylabel,title,selector in condition_plots:
+            figure,warnings=categorical_parameter_figure(self.results,selector,ylabel,title)
+            plot_warnings.extend(warnings)
+            if figure is not None:self._add_fig(tab,figure,key)
+        for warning in plot_warnings:
+            if warning not in self._batch_errors:self._batch_errors.append(warning)
+        if plot_warnings:self.status.showMessage(plot_warnings[-1],10000)
     def _add_fig(self,title,fig,key):
         w=QWidget(); v=QVBoxLayout(w); c=FigureCanvas(fig); v.addWidget(NavigationToolbar2QT(c,w)); v.addWidget(c); self.tabs.addTab(w,title); self.figures[key]=fig
 
