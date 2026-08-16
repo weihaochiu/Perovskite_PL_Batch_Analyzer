@@ -60,6 +60,20 @@ class SpectrumFitResult:
     aicc: float
     bic: float
     warnings: list[str]
+    baseline_mode: str | None = None
+
+
+@dataclass(frozen=True)
+class FitCurveData:
+    """Point-by-point fitted arrays shared by plotting and external-data export."""
+
+    photon_energy_ev: np.ndarray
+    wavelength_nm: np.ndarray
+    raw_intensity: np.ndarray
+    baseline: np.ndarray | None
+    components: tuple[np.ndarray, ...]
+    total_fit: np.ndarray
+    residual: np.ndarray
 
 @dataclass
 class TemperatureFitResult:
@@ -316,7 +330,40 @@ def fit_spectrum(spec: PLSpectrum, *, model: str="Pseudo-Voigt", n_peaks: int=1,
     order=np.argsort([p.center_ev for p in peaks]); peaks=[peaks[i] for i in order]; comps=[comps[i] for i in order]
     if any(p.area_fraction<0.01 for p in peaks): warnings.append("One or more components contribute <1% of total fitted area.")
     baseline=_baseline(x,popt[n*n_peaks:],baseline_mode)
-    return SpectrumFitResult(spec.temperature_k,model,n_peaks,peaks,x,y,yfit,comps,baseline,resid,float(r2),float(adj),rmse,red,aic,aicc,bic,warnings)
+    return SpectrumFitResult(spec.temperature_k,model,n_peaks,peaks,x,y,yfit,comps,baseline,resid,float(r2),float(adj),rmse,red,aic,aicc,bic,warnings,baseline_mode)
+
+
+def build_fit_curve_data(result: SpectrumFitResult) -> FitCurveData:
+    """Return the exact saved fit arrays in a model-independent export shape.
+
+    Total fit, component, baseline, raw, and residual values are not recomputed.
+    Only wavelength is derived from the fitted energy grid using the same
+    ``HC_EV_NM`` constant as spectrum preparation and peak summaries.
+    """
+    energy = np.asarray(result.x_ev, dtype=float)
+    raw = np.asarray(result.y_raw, dtype=float)
+    total_fit = np.asarray(result.y_fit, dtype=float)
+    residual = np.asarray(result.residual, dtype=float)
+    components = tuple(np.asarray(component, dtype=float) for component in result.components)
+    baseline_values = np.asarray(result.baseline, dtype=float)
+
+    arrays = (raw, total_fit, residual, baseline_values, *components)
+    if any(array.shape != energy.shape for array in arrays):
+        raise ValueError("Fit curve arrays must all match the photon-energy grid.")
+    if len(components) != result.n_peaks:
+        raise ValueError("Saved peak component count does not match the fitted peak count.")
+
+    baseline_mode = getattr(result, "baseline_mode", None)
+    has_baseline = baseline_mode != "None" if baseline_mode is not None else bool(np.any(baseline_values != 0))
+    return FitCurveData(
+        photon_energy_ev=energy,
+        wavelength_nm=HC_EV_NM / energy,
+        raw_intensity=raw,
+        baseline=baseline_values if has_baseline else None,
+        components=components,
+        total_fit=total_fit,
+        residual=residual,
+    )
 
 
 def fit_best_model(spec: PLSpectrum, *, models=("Gaussian","Pseudo-Voigt","Voigt"), max_peaks=2, baseline_mode="Constant", fit_range_ev=None, use_jacobian=True, timings: dict[str,float]|None=None):

@@ -12,10 +12,10 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas,
 from batch_worker import BatchFitWorker,append_jsonl
 from pl_core import read_table,numeric_columns
 from plotting import categorical_parameter_figure,contour_figure,overlay_figure,parameter_figure,selected_fit_figure
-from export_manager import export_all
+from export_manager import ExportOptions,export_all
 
 APP_VERSION="0.4.0"
-HEADERS=["Use","Export","Condition","Sample ID","Temperature (K)","Direction","Output code","File","X column","PL column","Status"]
+HEADERS=["Use","Export","Condition","Sample ID","Temperature (K)","Direction","Output Name","File","X column","PL column","Status"]
 SUPPORTED_SPECTRUM_EXTENSIONS={".asc",".csv",".dat",".tsv",".txt",".xls",".xlsx"}
 SPECTRUM_FILE_FILTER="Spectra (*.csv *.txt *.dat *.tsv *.xls *.xlsx *.asc);;ASC files (*.asc)"
 
@@ -60,7 +60,16 @@ class MainWindow(QMainWindow):
         self.energy_model=QComboBox(); self.energy_model.addItems(["Linear","Varshni","Bose-Einstein"]); tf.addRow("Peak energy",self.energy_model)
         self.fwhm_model=QComboBox(); self.fwhm_model.addItems(["Linear","LO phonon","Full phonon"]); tf.addRow("FWHM",self.fwhm_model)
         self.int_model=QComboBox(); self.int_model.addItems(["One-channel Arrhenius","Two-channel Arrhenius"]); tf.addRow("Integrated intensity",self.int_model)
-        form.addWidget(tg); form.addStretch(); splitter.addWidget(controls)
+        form.addWidget(tg)
+        export_group=QGroupBox("Export outputs"); export_layout=QVBoxLayout(export_group)
+        self.export_summary_excel=QCheckBox("Fitting summary Excel"); self.export_summary_excel.setChecked(True)
+        self.export_individual_csv=QCheckBox("Individual fitting curve CSV"); self.export_individual_csv.setChecked(True)
+        self.export_individual_excel=QCheckBox("Individual fitting curve Excel"); self.export_individual_excel.setChecked(True)
+        self.export_figures_png=QCheckBox("Figures PNG"); self.export_figures_png.setChecked(True)
+        self.export_figures_pdf=QCheckBox("Figures PDF"); self.export_figures_pdf.setChecked(True)
+        self.export_controls=[self.export_summary_excel,self.export_individual_csv,self.export_individual_excel,self.export_figures_png,self.export_figures_pdf]
+        for checkbox in self.export_controls:export_layout.addWidget(checkbox)
+        form.addWidget(export_group); form.addStretch(); splitter.addWidget(controls)
         right=QWidget(); rv=QVBoxLayout(right)
         buttons=QHBoxLayout(); self.file_buttons=[]
         for t,s in [("Add files",self.add_files),("Remove",self.remove_selected),("Move up",lambda:self.move(-1)),("Move down",lambda:self.move(1))]: b=QPushButton(t); b.clicked.connect(s); buttons.addWidget(b); self.file_buttons.append(b)
@@ -121,6 +130,7 @@ class MainWindow(QMainWindow):
         self.batch_action.setEnabled(not running); self.export_action.setEnabled(not running); self.table.setEnabled(not running)
         for button in self.file_buttons:button.setEnabled(not running)
         for widget in self.fit_controls:widget.setEnabled(not running)
+        for widget in self.export_controls:widget.setEnabled(not running)
         for name in ("Add spectra","Open project","Save project"):self.toolbar_actions[name].setEnabled(not running)
         self.cancel_batch_button.setEnabled(running)
 
@@ -134,7 +144,7 @@ class MainWindow(QMainWindow):
         if not tasks:
             QMessageBox.information(self,"Batch fit","沒有勾選要分析的檔案。"); return
         self._clear_tabs(); self.results=[]; self.tempfits={}; self._batch_errors=[]; self._last_batch_summary=None
-        for index,_ in tasks:self.records[index]["status"]="Queued"; self.table.item(index,10).setText("Queued")
+        for index,_ in tasks:self.records[index]["status"]="Queued"; self.records[index].pop("failure_reason",None); self.table.item(index,10).setText("Queued")
         stamp=datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         log_root=Path(self.batch_log_directory) if self.batch_log_directory else Path(QStandardPaths.writableLocation(QStandardPaths.AppLocalDataLocation))/"batch_runs"
         self.checkpoint_path=str(log_root/f"batch_checkpoint_{stamp}.jsonl"); self.timing_log_path=str(log_root/f"batch_timing_{stamp}.jsonl")
@@ -152,10 +162,10 @@ class MainWindow(QMainWindow):
         index=payload["row_index"]; self.records[index]["status"]="Fitting"; self.table.item(index,10).setText("Fitting"); self.progress_file.setText(payload["source"])
 
     def _on_item_completed(self,payload):
-        index=payload["row_index"]; self.results.append((payload["label"],payload["spectrum"],payload["result"])); self.records[index]["status"]="OK"; self.table.item(index,10).setText("OK")
+        index=payload["row_index"]; self.results.append((payload["label"],payload["spectrum"],payload["result"])); self.records[index]["status"]="OK"; self.records[index].pop("failure_reason",None); self.table.item(index,10).setText("OK")
 
     def _on_item_failed(self,payload):
-        index=payload["row_index"]; self.records[index]["status"]="Failed"; self.table.item(index,10).setText("Failed"); self._batch_errors.append(f"檔案 {payload['source']}：{payload['error']}")
+        index=payload["row_index"]; self.records[index]["status"]="Failed"; self.records[index]["failure_reason"]=payload["error"]; self.table.item(index,10).setText("Failed"); self._batch_errors.append(f"檔案 {payload['source']}：{payload['error']}")
 
     def _on_batch_progress(self,payload):
         self.progress_file.setText(payload["source"]); self.progress_counts.setText(f"{payload['completed']} / {payload['total']} ({payload['percent']:.1f}%)"); self.progress_bar.setValue(round(payload["percent"]*10)); self.progress_timing.setText(f"Single: {payload['file_elapsed']:.2f} s   ETA: {self._duration(payload['eta'])}"); self.batch_progressed.emit(payload)
@@ -241,11 +251,13 @@ class MainWindow(QMainWindow):
         if self._batch_thread is not None:return
         if not self.results:
             self.analyze(); return
+        self._sync()
         d=QFileDialog.getExistingDirectory(self,"Export folder");
         if not d:return
         started=perf_counter()
         try:
-            export_all(d,[r for r in self.results if next((x["export"] for x in self.records if x["code"]==r[0]),True)],self.tempfits,self.figures)
+            options=ExportOptions(summary_excel=self.export_summary_excel.isChecked(),individual_csv=self.export_individual_csv.isChecked(),individual_excel=self.export_individual_excel.isChecked(),figures_png=self.export_figures_png.isChecked(),figures_pdf=self.export_figures_pdf.isChecked())
+            export_all(d,self.results,self.tempfits,self.figures,records=self.records,options=options)
         finally:
             elapsed=perf_counter()-started
             if self.timing_log_path:
@@ -255,7 +267,7 @@ class MainWindow(QMainWindow):
     def save_project(self):
         self._sync(); p,_=QFileDialog.getSaveFileName(self,"Save project","project.plproj","PL project (*.plproj)");
         if not p:return
-        tmp=Path(p); payload={"version":APP_VERSION,"records":self.records,"settings":{"x_type":self.x_type.currentText(),"model":self.model.currentText(),"npeaks":self.npeaks.currentText(),"baseline":self.baseline.currentText(),"jacobian":self.jacobian.isChecked(),"energy_model":self.energy_model.currentText(),"fwhm_model":self.fwhm_model.currentText(),"int_model":self.int_model.currentText()}}
+        tmp=Path(p); payload={"version":APP_VERSION,"records":self.records,"settings":{"x_type":self.x_type.currentText(),"model":self.model.currentText(),"npeaks":self.npeaks.currentText(),"baseline":self.baseline.currentText(),"jacobian":self.jacobian.isChecked(),"energy_model":self.energy_model.currentText(),"fwhm_model":self.fwhm_model.currentText(),"int_model":self.int_model.currentText(),"export_summary_excel":self.export_summary_excel.isChecked(),"export_individual_csv":self.export_individual_csv.isChecked(),"export_individual_excel":self.export_individual_excel.isChecked(),"export_figures_png":self.export_figures_png.isChecked(),"export_figures_pdf":self.export_figures_pdf.isChecked()}}
         tmp.write_text(json.dumps(payload,ensure_ascii=False,indent=2),encoding="utf-8")
     def open_project(self):
         p,_=QFileDialog.getOpenFileName(self,"Open project","","PL project (*.plproj)");
@@ -266,6 +278,7 @@ class MainWindow(QMainWindow):
         for widget,key in [(self.x_type,"x_type"),(self.model,"model"),(self.npeaks,"npeaks"),(self.baseline,"baseline"),(self.energy_model,"energy_model"),(self.fwhm_model,"fwhm_model"),(self.int_model,"int_model")]:
             if key in s:widget.setCurrentText(s[key])
         self.jacobian.setChecked(s.get("jacobian",True))
+        for widget,key in [(self.export_summary_excel,"export_summary_excel"),(self.export_individual_csv,"export_individual_csv"),(self.export_individual_excel,"export_individual_excel"),(self.export_figures_png,"export_figures_png"),(self.export_figures_pdf,"export_figures_pdf")]:widget.setChecked(s.get(key,True))
 
     def closeEvent(self,event):
         if self._batch_thread is not None:

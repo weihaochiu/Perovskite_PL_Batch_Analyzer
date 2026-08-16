@@ -6,6 +6,8 @@ import re
 import numpy as np
 from matplotlib.figure import Figure
 
+from pl_core import build_fit_curve_data
+
 
 REPLICATE_SUFFIX = re.compile(r"[-_]\d+$")
 
@@ -178,12 +180,14 @@ def categorical_parameter_figure(records, value_selector, ylabel, title):
     return fig, warnings
 
 def selected_fit_figure(result):
+    curves=build_fit_curve_data(result)
     fig=Figure(figsize=(10,7),constrained_layout=True); axs=fig.subplots(2,2)
-    ax=axs[0,0]; ax.plot(result.x_ev,result.y_raw,label="Raw"); ax.plot(result.x_ev,result.y_fit,label="Total fit")
-    for i,c in enumerate(result.components,1): ax.plot(result.x_ev,c+result.baseline,label=f"Peak {i}",linestyle="--")
+    ax=axs[0,0]; ax.plot(curves.photon_energy_ev,curves.raw_intensity,label="Raw"); ax.plot(curves.photon_energy_ev,curves.total_fit,label="Total fit")
+    if curves.baseline is not None:ax.plot(curves.photon_energy_ev,curves.baseline,label="Baseline",linestyle=":")
+    for i,c in enumerate(curves.components,1): ax.plot(curves.photon_energy_ev,c,label=f"Peak {i}",linestyle="--")
     ax.set(xlabel="Photon energy (eV)",ylabel="PL intensity",title=f"{result.temperature_k:g} K: {result.model}, {result.n_peaks} peak(s)"); ax.legend()
-    axs[0,1].plot(result.x_ev,result.residual); axs[0,1].axhline(0,linewidth=.8); axs[0,1].set(xlabel="Photon energy (eV)",ylabel="Residual",title="Residual")
-    axs[1,0].plot(result.x_ev,result.y_raw,label="Raw"); axs[1,0].plot(result.x_ev,result.y_fit,label="Fit"); axs[1,0].set_yscale("log"); axs[1,0].set(xlabel="Photon energy (eV)",ylabel="PL intensity (log)",title="Log view")
+    axs[0,1].plot(curves.photon_energy_ev,curves.residual); axs[0,1].axhline(0,linewidth=.8); axs[0,1].set(xlabel="Photon energy (eV)",ylabel="Residual",title="Residual")
+    axs[1,0].plot(curves.photon_energy_ev,curves.raw_intensity,label="Raw"); axs[1,0].plot(curves.photon_energy_ev,curves.total_fit,label="Fit"); axs[1,0].set_yscale("log"); axs[1,0].set(xlabel="Photon energy (eV)",ylabel="PL intensity (log)",title="Log view")
     text=[f"R² = {result.r_squared:.6f}",f"Adj. R² = {result.adjusted_r_squared:.6f}",f"RMSE = {result.rmse:.4g}",f"AICc = {result.aicc:.2f}",f"BIC = {result.bic:.2f}"]
     for p in result.peaks: text += [f"Peak {p.peak_index}: {p.center_ev:.5f} eV / {p.center_nm:.2f} nm",f"FWHM: {p.fwhm_mev:.2f} meV; Area: {p.area:.4g}"]
     axs[1,1].axis("off"); axs[1,1].text(0,.98,"\n".join(text),va="top",family="monospace")
