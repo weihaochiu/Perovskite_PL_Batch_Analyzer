@@ -3,6 +3,7 @@ import json,re,sys
 from datetime import datetime
 from pathlib import Path
 from time import perf_counter
+from uuid import uuid4
 import numpy as np
 from PySide6.QtCore import Qt,QSettings,QStandardPaths,QThread,Signal
 from PySide6.QtGui import QAction
@@ -10,7 +11,7 @@ from PySide6.QtWidgets import *
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas,NavigationToolbar2QT
 
 from batch_worker import BatchFitWorker,append_jsonl
-from pl_core import read_table,numeric_columns
+from pl_core import CompletedFit,numeric_columns,read_table
 from plotting import categorical_parameter_figure,contour_figure,overlay_figure,parameter_figure,selected_fit_figure
 from export_manager import ExportOptions,export_all
 
@@ -18,6 +19,18 @@ APP_VERSION="0.4.0"
 HEADERS=["Use","Export","Condition","Sample ID","Temperature (K)","Direction","Output Name","File","X column","PL column","Status"]
 SUPPORTED_SPECTRUM_EXTENSIONS={".asc",".csv",".dat",".tsv",".txt",".xls",".xlsx"}
 SPECTRUM_FILE_FILTER="Spectra (*.csv *.txt *.dat *.tsv *.xls *.xlsx *.asc);;ASC files (*.asc)"
+
+
+def ensure_record_ids(records: list[dict]) -> list[dict]:
+    """Preserve valid IDs and assign UUIDs to legacy or duplicate project records."""
+    seen: set[str] = set()
+    for record in records:
+        record_id = str(record.get("record_id", "")).strip()
+        if not record_id or record_id in seen:
+            record_id = str(uuid4())
+        record["record_id"] = record_id
+        seen.add(record_id)
+    return records
 
 class DropTable(QTableWidget):
     def __init__(self,parent): super().__init__(parent); self.setAcceptDrops(True)
@@ -34,7 +47,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__(); self.setWindowTitle(f"Perovskite Steady-State PL Batch Analyzer v{APP_VERSION}"); self.resize(1500,900)
-        self.settings=QSettings("WeiHaoChiu","PerovskiteSSPLAnalyzer"); self.records=[]; self.results=[]; self.tempfits={}; self.figures={}
+        self.settings=QSettings("WeiHaoChiu","PerovskiteSSPLAnalyzer"); self.records=[]; self.results=[]; self.results_by_record_id={}; self.tempfits={}; self.figures={}
         self._batch_thread=None; self._batch_worker=None; self._batch_errors=[]; self._last_batch_summary=None; self._close_pending=False
         self.checkpoint_path=None; self.timing_log_path=None; self.batch_log_directory=None; self._build()
     def _build(self):
@@ -67,7 +80,9 @@ class MainWindow(QMainWindow):
         self.export_individual_excel=QCheckBox("Individual fitting curve Excel"); self.export_individual_excel.setChecked(True)
         self.export_figures_png=QCheckBox("Figures PNG"); self.export_figures_png.setChecked(True)
         self.export_figures_pdf=QCheckBox("Figures PDF"); self.export_figures_pdf.setChecked(True)
-        self.export_controls=[self.export_summary_excel,self.export_individual_csv,self.export_individual_excel,self.export_figures_png,self.export_figures_pdf]
+        self.export_legacy_curves=QCheckBox("Legacy combined Excel curve sheets"); self.export_legacy_curves.setChecked(False)
+        self.export_timestamped_folder=QCheckBox("Create timestamped export folder"); self.export_timestamped_folder.setChecked(True)
+        self.export_controls=[self.export_summary_excel,self.export_individual_csv,self.export_individual_excel,self.export_figures_png,self.export_figures_pdf,self.export_legacy_curves,self.export_timestamped_folder]
         for checkbox in self.export_controls:export_layout.addWidget(checkbox)
         form.addWidget(export_group); form.addStretch(); splitter.addWidget(controls)
         right=QWidget(); rv=QVBoxLayout(right)
@@ -95,7 +110,7 @@ class MainWindow(QMainWindow):
                 if len(cols)<2: raise ValueError("No two numeric columns found")
                 stem=Path(path).stem; tm=re.search(r"(?<!\d)(\d+(?:\.\d+)?)\s*[Kk](?!\w)",stem); T=float(tm.group(1)) if tm else 300.0
                 condition=re.sub(r"[_-]?\d+(?:\.\d+)?\s*[Kk].*","",stem).strip("_- ") or stem
-                rec={"use":True,"export":True,"condition":condition,"sample_id":condition,"temperature":T,"direction":"Isothermal","code":stem,"path":str(path),"x":cols[0],"y":cols[1],"status":"Ready"}; self.records.append(rec); self._add_row(rec)
+                rec={"record_id":str(uuid4()),"use":True,"export":True,"condition":condition,"sample_id":condition,"temperature":T,"direction":"Isothermal","code":stem,"path":str(path),"x":cols[0],"y":cols[1],"status":"Ready"}; self.records.append(rec); self._add_row(rec)
             except Exception as exc: QMessageBox.warning(self,"匯入失敗",f"檔案：{Path(path).name}\n原因：{exc}")
     def _add_row(self,r):
         row=self.table.rowCount(); self.table.insertRow(row)
@@ -140,10 +155,10 @@ class MainWindow(QMainWindow):
 
     def analyze(self):
         if self._batch_thread is not None:return
-        self._sync(); tasks=[(index,record) for index,record in enumerate(self.records) if record["use"]]
+        self._sync(); ensure_record_ids(self.records); tasks=[(index,record) for index,record in enumerate(self.records) if record["use"]]
         if not tasks:
             QMessageBox.information(self,"Batch fit","沒有勾選要分析的檔案。"); return
-        self._clear_tabs(); self.results=[]; self.tempfits={}; self._batch_errors=[]; self._last_batch_summary=None
+        self._clear_tabs(); self.results=[]; self.results_by_record_id={}; self.tempfits={}; self._batch_errors=[]; self._last_batch_summary=None
         for index,_ in tasks:self.records[index]["status"]="Queued"; self.records[index].pop("failure_reason",None); self.table.item(index,10).setText("Queued")
         stamp=datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         log_root=Path(self.batch_log_directory) if self.batch_log_directory else Path(QStandardPaths.writableLocation(QStandardPaths.AppLocalDataLocation))/"batch_runs"
@@ -158,14 +173,30 @@ class MainWindow(QMainWindow):
         if self._batch_worker is None:return
         self._batch_worker.request_cancel(); self.cancel_batch_button.setEnabled(False); self.progress_file.setText("Cancelling after current file..."); self.status.showMessage("Cancellation requested; completed results will be kept.")
 
+    def _record_index(self, record_id: str, fallback_index: int) -> int:
+        if 0 <= fallback_index < len(self.records):
+            if self.records[fallback_index].get("record_id") == record_id:
+                return fallback_index
+        for index, record in enumerate(self.records):
+            if record.get("record_id") == record_id:
+                return index
+        raise KeyError(f"Unknown batch record_id: {record_id}")
+
     def _on_item_started(self,payload):
-        index=payload["row_index"]; self.records[index]["status"]="Fitting"; self.table.item(index,10).setText("Fitting"); self.progress_file.setText(payload["source"])
+        index=self._record_index(payload["record_id"],payload["row_index"]); self.records[index]["status"]="Fitting"; self.table.item(index,10).setText("Fitting"); self.progress_file.setText(payload["source"])
 
     def _on_item_completed(self,payload):
-        index=payload["row_index"]; self.results.append((payload["label"],payload["spectrum"],payload["result"])); self.records[index]["status"]="OK"; self.records[index].pop("failure_reason",None); self.table.item(index,10).setText("OK")
+        record_id=payload["record_id"]
+        index=self._record_index(record_id,payload["row_index"])
+        completed=CompletedFit(record_id,payload["label"],payload["spectrum"],payload["result"])
+        self.results.append(completed)
+        self.results_by_record_id[record_id]=completed
+        self.records[index]["status"]="OK"
+        self.records[index].pop("failure_reason",None)
+        self.table.item(index,10).setText("OK")
 
     def _on_item_failed(self,payload):
-        index=payload["row_index"]; self.records[index]["status"]="Failed"; self.records[index]["failure_reason"]=payload["error"]; self.table.item(index,10).setText("Failed"); self._batch_errors.append(f"檔案 {payload['source']}：{payload['error']}")
+        index=self._record_index(payload["record_id"],payload["row_index"]); self.records[index]["status"]="Failed"; self.records[index]["failure_reason"]=payload["error"]; self.table.item(index,10).setText("Failed"); self._batch_errors.append(f"檔案 {payload['source']}：{payload['error']}")
 
     def _on_batch_progress(self,payload):
         self.progress_file.setText(payload["source"]); self.progress_counts.setText(f"{payload['completed']} / {payload['total']} ({payload['percent']:.1f}%)"); self.progress_bar.setValue(round(payload["percent"]*10)); self.progress_timing.setText(f"Single: {payload['file_elapsed']:.2f} s   ETA: {self._duration(payload['eta'])}"); self.batch_progressed.emit(payload)
@@ -240,13 +271,13 @@ class MainWindow(QMainWindow):
     def show_selected(self):
         rows=self.table.selectionModel().selectedRows() if self.table.selectionModel() else []
         if not rows or not self.results:return
-        idx=rows[0].row(); code=self.records[idx]["code"]
-        for l,s,r in self.results:
-            if l==code:
-                old=self.figures.pop("selected_fit",None)
-                if self.tabs.count():self._dispose_tab(0)
-                if old is not None:old.clear()
-                fig=selected_fit_figure(r); w=QWidget(); v=QVBoxLayout(w); c=FigureCanvas(fig); v.addWidget(NavigationToolbar2QT(c,w)); v.addWidget(c); self.tabs.insertTab(0,w,"Selected fit"); self.tabs.setCurrentIndex(0); self.figures["selected_fit"]=fig; break
+        idx=rows[0].row(); record_id=self.records[idx]["record_id"]
+        completed=self.results_by_record_id.get(record_id)
+        if completed is not None:
+            old=self.figures.pop("selected_fit",None)
+            if self.tabs.count():self._dispose_tab(0)
+            if old is not None:old.clear()
+            fig=selected_fit_figure(completed.result); w=QWidget(); v=QVBoxLayout(w); c=FigureCanvas(fig); v.addWidget(NavigationToolbar2QT(c,w)); v.addWidget(c); self.tabs.insertTab(0,w,"Selected fit"); self.tabs.setCurrentIndex(0); self.figures["selected_fit"]=fig
     def export(self):
         if self._batch_thread is not None:return
         if not self.results:
@@ -256,29 +287,39 @@ class MainWindow(QMainWindow):
         if not d:return
         started=perf_counter()
         try:
-            options=ExportOptions(summary_excel=self.export_summary_excel.isChecked(),individual_csv=self.export_individual_csv.isChecked(),individual_excel=self.export_individual_excel.isChecked(),figures_png=self.export_figures_png.isChecked(),figures_pdf=self.export_figures_pdf.isChecked())
-            export_all(d,self.results,self.tempfits,self.figures,records=self.records,options=options)
+            options=ExportOptions(summary_excel=self.export_summary_excel.isChecked(),individual_csv=self.export_individual_csv.isChecked(),individual_excel=self.export_individual_excel.isChecked(),figures_png=self.export_figures_png.isChecked(),figures_pdf=self.export_figures_pdf.isChecked(),legacy_curve_sheets=self.export_legacy_curves.isChecked(),timestamped_folder=self.export_timestamped_folder.isChecked())
+            report=export_all(d,self.results,self.tempfits,self.figures,records=self.records,options=options,app_version=APP_VERSION)
         finally:
             elapsed=perf_counter()-started
             if self.timing_log_path:
                 try:append_jsonl(self.timing_log_path,{"type":"batch_stage","stage":"export","seconds":elapsed,"output":d})
                 except Exception as exc:self.status.showMessage(f"export timing log 寫入失敗：{exc}",10000)
-        QMessageBox.information(self,"Export complete",d)
+        message=(
+            "Export completed\n\n"
+            f"Folder:\n{report['output_directory']}\n\n"
+            f"Successful fits exported: {report['successful_curve_exports']}\n"
+            f"Individual CSV: {report['csv_files']}\n"
+            f"Individual Excel sheets: {report['individual_excel_sheets']}\n"
+            f"Failed fits: {report['failed_fits']}\n"
+            f"Skipped by Export checkbox: {report['skipped_by_export_checkbox']}"
+        )
+        self.status.showMessage(f"Export completed: {report['output_directory']}")
+        QMessageBox.information(self,"Export complete",message)
     def save_project(self):
         self._sync(); p,_=QFileDialog.getSaveFileName(self,"Save project","project.plproj","PL project (*.plproj)");
         if not p:return
-        tmp=Path(p); payload={"version":APP_VERSION,"records":self.records,"settings":{"x_type":self.x_type.currentText(),"model":self.model.currentText(),"npeaks":self.npeaks.currentText(),"baseline":self.baseline.currentText(),"jacobian":self.jacobian.isChecked(),"energy_model":self.energy_model.currentText(),"fwhm_model":self.fwhm_model.currentText(),"int_model":self.int_model.currentText(),"export_summary_excel":self.export_summary_excel.isChecked(),"export_individual_csv":self.export_individual_csv.isChecked(),"export_individual_excel":self.export_individual_excel.isChecked(),"export_figures_png":self.export_figures_png.isChecked(),"export_figures_pdf":self.export_figures_pdf.isChecked()}}
+        tmp=Path(p); payload={"version":APP_VERSION,"records":self.records,"settings":{"x_type":self.x_type.currentText(),"model":self.model.currentText(),"npeaks":self.npeaks.currentText(),"baseline":self.baseline.currentText(),"jacobian":self.jacobian.isChecked(),"energy_model":self.energy_model.currentText(),"fwhm_model":self.fwhm_model.currentText(),"int_model":self.int_model.currentText(),"export_summary_excel":self.export_summary_excel.isChecked(),"export_individual_csv":self.export_individual_csv.isChecked(),"export_individual_excel":self.export_individual_excel.isChecked(),"export_figures_png":self.export_figures_png.isChecked(),"export_figures_pdf":self.export_figures_pdf.isChecked(),"export_legacy_curves":self.export_legacy_curves.isChecked(),"export_timestamped_folder":self.export_timestamped_folder.isChecked()}}
         tmp.write_text(json.dumps(payload,ensure_ascii=False,indent=2),encoding="utf-8")
     def open_project(self):
         p,_=QFileDialog.getOpenFileName(self,"Open project","","PL project (*.plproj)");
         if not p:return
-        data=json.loads(Path(p).read_text(encoding="utf-8")); self.records=data["records"]; self.table.setRowCount(0)
+        data=json.loads(Path(p).read_text(encoding="utf-8")); self.records=ensure_record_ids(data["records"]); self.results=[]; self.results_by_record_id={}; self.tempfits={}; self._clear_tabs(); self.table.setRowCount(0)
         for r in self.records:self._add_row(r)
         s=data.get("settings",{});
         for widget,key in [(self.x_type,"x_type"),(self.model,"model"),(self.npeaks,"npeaks"),(self.baseline,"baseline"),(self.energy_model,"energy_model"),(self.fwhm_model,"fwhm_model"),(self.int_model,"int_model")]:
             if key in s:widget.setCurrentText(s[key])
         self.jacobian.setChecked(s.get("jacobian",True))
-        for widget,key in [(self.export_summary_excel,"export_summary_excel"),(self.export_individual_csv,"export_individual_csv"),(self.export_individual_excel,"export_individual_excel"),(self.export_figures_png,"export_figures_png"),(self.export_figures_pdf,"export_figures_pdf")]:widget.setChecked(s.get(key,True))
+        for widget,key,default in [(self.export_summary_excel,"export_summary_excel",True),(self.export_individual_csv,"export_individual_csv",True),(self.export_individual_excel,"export_individual_excel",True),(self.export_figures_png,"export_figures_png",True),(self.export_figures_pdf,"export_figures_pdf",True),(self.export_legacy_curves,"export_legacy_curves",False),(self.export_timestamped_folder,"export_timestamped_folder",True)]:widget.setChecked(s.get(key,default))
 
     def closeEvent(self,event):
         if self._batch_thread is not None:

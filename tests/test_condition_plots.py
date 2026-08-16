@@ -15,7 +15,7 @@ import pandas as pd
 from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 from app import MainWindow
-from pl_core import PLSpectrum, PeakResult, SpectrumFitResult
+from pl_core import CompletedFit, PLSpectrum, PeakResult, SpectrumFitResult
 from plotting import (
     categorical_parameter_figure,
     group_condition_values,
@@ -224,9 +224,11 @@ class TestConditionPlotsInGui(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             window = MainWindow()
-            window.results = rows
-            for label, spectrum, _ in rows:
+            completed_rows = []
+            for index, (label, spectrum, result) in enumerate(rows):
+                record_id = f"condition-{index}"
                 record = {
+                    "record_id": record_id,
                     "use": True,
                     "export": True,
                     "condition": spectrum.condition,
@@ -241,6 +243,10 @@ class TestConditionPlotsInGui(unittest.TestCase):
                 }
                 window.records.append(record)
                 window._add_row(record)
+                completed = CompletedFit(record_id, label, spectrum, result)
+                completed_rows.append(completed)
+                window.results_by_record_id[record_id] = completed
+            window.results = completed_rows
 
             window.refresh_tabs()
             self.assertTrue(expected_keys.issubset(window.figures))
@@ -261,18 +267,20 @@ class TestConditionPlotsInGui(unittest.TestCase):
                 self.assertEqual(figure.axes, [])
 
             output = root / "export"
+            window.export_timestamped_folder.setChecked(False)
             with patch.object(QFileDialog, "getExistingDirectory", return_value=str(output)), patch.object(
                 QMessageBox, "information"
             ):
                 window.export()
             for key in expected_keys:
-                self.assertTrue((output / f"{key}.png").is_file())
-                self.assertTrue((output / f"{key}.pdf").is_file())
+                self.assertTrue((output / "Figures" / f"{key}.png").is_file())
+                self.assertTrue((output / "Figures" / f"{key}.pdf").is_file())
             peak_results = pd.read_excel(output / "PL_batch_results.xlsx", sheet_name="Peak_Results")
             self.assertEqual(peak_results["Condition"].tolist(), ["Anti-1", "Anti-2", "C1-1", "C1-2"])
             self.assertEqual(
                 peak_results.columns.tolist(),
                 [
+                    "Record_ID",
                     "Label",
                     "Condition",
                     "Sample ID",

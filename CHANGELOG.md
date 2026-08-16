@@ -1,6 +1,10 @@
 # Changelog
 
 ## Unreleased
+- Added immutable per-record IDs across projects, background fitting, checkpoints, plotting selection, and export mapping.
+- Made spectrum exports honor the Export checkbox consistently and added isolated timestamped datasets with manifests.
+- Added fitting provenance, Origin-ready pure/display peak components, safer Windows filenames, and optional legacy Excel curve sheets.
+- Added Windows GitHub Actions tests and export-identity/reproducibility regression coverage.
 - Moved spectrum and temperature batch fitting off the Qt GUI thread into one serial background worker.
 - Added per-file progress, elapsed time, ETA, cooperative cancellation, failure isolation, and durable per-file checkpoints.
 - Added phased parse/preprocess/initial-guess/optimization/plot/export timing logs and explicit Matplotlib canvas/figure disposal.

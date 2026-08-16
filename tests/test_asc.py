@@ -13,7 +13,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from app import MainWindow, SPECTRUM_FILE_FILTER, SUPPORTED_SPECTRUM_EXTENSIONS
-from export_manager import export_all
+from export_manager import ExportOptions, export_all
 from pl_core import fit_spectrum, numeric_columns, prepare_spectrum, read_asc, read_table
 
 
@@ -195,7 +195,13 @@ class TestAscImport(unittest.TestCase):
                 use_jacobian=False,
             )
             output = root / "output"
-            export_all(output, [(path.stem, spectrum, result)], {}, {})
+            export_all(
+                output,
+                [(path.stem, spectrum, result)],
+                {},
+                {},
+                options=ExportOptions(timestamped_folder=False),
+            )
             exported_metadata = pd.read_excel(output / "PL_batch_results.xlsx", sheet_name="Spectrum_Metadata")
             payload = json.loads((output / "analysis_results.json").read_text(encoding="utf-8"))
 

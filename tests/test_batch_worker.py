@@ -151,6 +151,16 @@ class TestBatchWorkerStress(unittest.TestCase):
             checkpoint_rows = [json.loads(line) for line in Path(window.checkpoint_path).read_text(encoding="utf-8").splitlines()]
             self.assertEqual(sum(row["type"] == "completed" for row in checkpoint_rows), 78)
             self.assertEqual(sum(row["type"] == "failed" for row in checkpoint_rows), 1)
+            attempted = [row for row in checkpoint_rows if row["type"] in {"completed", "failed"}]
+            self.assertTrue(all(row.get("record_id") for row in attempted))
+            self.assertEqual(
+                {row["record_id"] for row in attempted},
+                {record["record_id"] for record in window.records},
+            )
+            self.assertEqual(
+                {completed.record_id for completed in window.results},
+                set(window.results_by_record_id),
+            )
             timing_rows = [json.loads(line) for line in Path(window.timing_log_path).read_text(encoding="utf-8").splitlines()]
             file_timings = [row for row in timing_rows if row["type"] == "file"]
             self.assertEqual(len(file_timings), 79)
@@ -229,10 +239,18 @@ class TestBatchWorkerStress(unittest.TestCase):
                 self.run_batch(window)
 
             output = root / "export"
+            window.model.setCurrentText("Lorentzian")
+            window.jacobian.setChecked(False)
+            window.table.item(0, 6).setText("Renamed_After_Fit")
+            window.export_timestamped_folder.setChecked(False)
             with patch.object(QFileDialog, "getExistingDirectory", return_value=str(output)), patch.object(QMessageBox, "information"):
                 window.export()
 
             self.assertTrue((output / "PL_batch_results.xlsx").is_file())
+            self.assertTrue((output / "Individual_Fit_Data" / "Renamed_After_Fit.csv").is_file())
+            index_rows = json.loads((output / "Individual_Fit_Data" / "Index.json").read_text(encoding="utf-8"))
+            self.assertEqual(index_rows[0]["Requested_Model"], "Gaussian")
+            self.assertTrue(index_rows[0]["Jacobian_Corrected"])
             timing_rows = [json.loads(line) for line in Path(window.timing_log_path).read_text(encoding="utf-8").splitlines()]
             self.assertTrue(any(row.get("stage") == "export" for row in timing_rows))
             window.close()

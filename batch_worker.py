@@ -12,6 +12,8 @@ import numpy as np
 from PySide6.QtCore import QObject, Signal, Slot
 
 from pl_core import (
+    CompletedFit,
+    capture_fit_settings,
     fit_best_model,
     fit_spectrum,
     fit_temperature,
@@ -58,6 +60,7 @@ class BatchFitWorker(QObject):
             "total": len(self.tasks),
             "settings": self.settings,
             "files": [record["path"] for _, record in self.tasks],
+            "record_ids": [record["record_id"] for _, record in self.tasks],
         }
         append_jsonl(self.checkpoint_path, header, reset=True)
         append_jsonl(
@@ -72,6 +75,7 @@ class BatchFitWorker(QObject):
             {
                 "type": "completed",
                 "row_index": payload["row_index"],
+                "record_id": payload["record_id"],
                 "label": payload["label"],
                 "source": payload["source"],
                 "spectrum": result_to_dict(payload["spectrum"]),
@@ -86,6 +90,7 @@ class BatchFitWorker(QObject):
             {
                 "type": "failed",
                 "row_index": payload["row_index"],
+                "record_id": payload["record_id"],
                 "label": payload["label"],
                 "source": payload["source"],
                 "error": payload["error"],
@@ -141,6 +146,18 @@ class BatchFitWorker(QObject):
                 instrument_fwhm_mev=self.settings["instrument_fwhm_mev"],
                 timings=timings,
             )
+        automatic = model == "Automatic" or str(npeaks).startswith("Auto")
+        applied_instrument_fwhm = 0.0 if automatic else self.settings["instrument_fwhm_mev"]
+        capture_fit_settings(
+            result,
+            spectrum,
+            requested_model=model,
+            requested_n_peaks=npeaks,
+            baseline_mode=self.settings["baseline"],
+            jacobian_corrected=self.settings["jacobian"],
+            instrument_fwhm_mev=applied_instrument_fwhm,
+            automatic_model_selection=automatic,
+        )
         return spectrum, result
 
     def _temperature_fits(self, rows, errors):
@@ -188,7 +205,13 @@ class BatchFitWorker(QObject):
                 break
             source = Path(record["path"]).name
             self.item_started.emit(
-                {"row_index": row_index, "source": source, "completed": processed, "total": total}
+                {
+                    "row_index": row_index,
+                    "record_id": record["record_id"],
+                    "source": source,
+                    "completed": processed,
+                    "total": total,
+                }
             )
             item_started = perf_counter()
             timings = {"parse": 0.0, "preprocess": 0.0, "initial_guess": 0.0, "optimization": 0.0}
@@ -198,13 +221,21 @@ class BatchFitWorker(QObject):
                 timings["total"] = elapsed
                 payload = {
                     "row_index": row_index,
+                    "record_id": record["record_id"],
                     "label": record["code"],
                     "source": source,
                     "spectrum": spectrum,
                     "result": result,
                     "timings": timings,
                 }
-                rows.append((record["code"], spectrum, result))
+                rows.append(
+                    CompletedFit(
+                        record_id=record["record_id"],
+                        output_name=record["code"],
+                        spectrum=spectrum,
+                        result=result,
+                    )
+                )
                 try:
                     self._checkpoint_completed(payload)
                     append_jsonl(self.timing_log_path, {"type": "file", **{k: v for k, v in payload.items() if k not in {"spectrum", "result"}}})
@@ -218,6 +249,7 @@ class BatchFitWorker(QObject):
                 errors.append(message)
                 payload = {
                     "row_index": row_index,
+                    "record_id": record["record_id"],
                     "label": record["code"],
                     "source": source,
                     "error": str(exc),

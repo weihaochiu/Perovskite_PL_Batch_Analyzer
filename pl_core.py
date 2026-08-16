@@ -26,6 +26,7 @@ class PLSpectrum:
     sample_id: str
     source_name: str = ""
     metadata: dict[str, str] = field(default_factory=dict)
+    input_x_type: str = "Wavelength (nm)"
 
 @dataclass
 class PeakResult:
@@ -39,6 +40,22 @@ class PeakResult:
     area_fraction: float
     parameters: dict
     errors: dict
+
+
+@dataclass(frozen=True)
+class FitSettings:
+    """Immutable provenance for the settings that produced one fit result."""
+
+    requested_model: str
+    requested_n_peaks: str
+    selected_model: str
+    selected_n_peaks: int
+    baseline_mode: str
+    jacobian_corrected: bool
+    intensity_domain: str
+    fit_range_ev: tuple[float, float]
+    instrument_fwhm_mev: float
+    automatic_model_selection: bool
 
 @dataclass
 class SpectrumFitResult:
@@ -61,6 +78,24 @@ class SpectrumFitResult:
     bic: float
     warnings: list[str]
     baseline_mode: str | None = None
+    fit_settings: FitSettings | None = None
+
+
+@dataclass(frozen=True)
+class CompletedFit:
+    """A successful fit tied to the immutable ID of its source GUI record."""
+
+    record_id: str
+    output_name: str
+    spectrum: PLSpectrum
+    result: SpectrumFitResult
+
+    def __iter__(self):
+        """Retain the existing plotting tuple protocol: label, spectrum, result."""
+        return iter((self.output_name, self.spectrum, self.result))
+
+    def __getitem__(self, index):
+        return (self.output_name, self.spectrum, self.result)[index]
 
 
 @dataclass(frozen=True)
@@ -204,7 +239,53 @@ def prepare_spectrum(df: pd.DataFrame, x_column: str, y_column: str, *, x_type: 
     # spectral density transformation |d lambda / dE| = hc / E^2
     y_ev=y*HC_EV_NM/np.square(ev)
     metadata=dict(df.attrs.get("metadata", {}))
-    return PLSpectrum(wl,ev,y,y_ev,float(temperature_k),condition,sample_id,source_name,metadata)
+    return PLSpectrum(
+        wl,
+        ev,
+        y,
+        y_ev,
+        float(temperature_k),
+        condition,
+        sample_id,
+        source_name,
+        metadata,
+        x_type,
+    )
+
+
+def intensity_domain_for_fit(spec: PLSpectrum, jacobian_corrected: bool) -> str:
+    if jacobian_corrected:
+        return "Energy-domain Jacobian-corrected"
+    if str(getattr(spec, "input_x_type", "")).startswith("Wavelength"):
+        return "Wavelength-domain input"
+    return "Energy-domain uncorrected"
+
+
+def capture_fit_settings(
+    result: SpectrumFitResult,
+    spec: PLSpectrum,
+    *,
+    requested_model: str,
+    requested_n_peaks: str | int,
+    baseline_mode: str,
+    jacobian_corrected: bool,
+    instrument_fwhm_mev: float,
+    automatic_model_selection: bool,
+) -> SpectrumFitResult:
+    """Attach the settings used for fitting, independent of later GUI changes."""
+    result.fit_settings = FitSettings(
+        requested_model=str(requested_model),
+        requested_n_peaks=str(requested_n_peaks),
+        selected_model=result.model,
+        selected_n_peaks=result.n_peaks,
+        baseline_mode=baseline_mode,
+        jacobian_corrected=bool(jacobian_corrected),
+        intensity_domain=intensity_domain_for_fit(spec, jacobian_corrected),
+        fit_range_ev=(float(result.x_ev.min()), float(result.x_ev.max())),
+        instrument_fwhm_mev=float(instrument_fwhm_mev),
+        automatic_model_selection=bool(automatic_model_selection),
+    )
+    return result
 
 
 def gaussian(x, center, fwhm, height):
@@ -330,7 +411,37 @@ def fit_spectrum(spec: PLSpectrum, *, model: str="Pseudo-Voigt", n_peaks: int=1,
     order=np.argsort([p.center_ev for p in peaks]); peaks=[peaks[i] for i in order]; comps=[comps[i] for i in order]
     if any(p.area_fraction<0.01 for p in peaks): warnings.append("One or more components contribute <1% of total fitted area.")
     baseline=_baseline(x,popt[n*n_peaks:],baseline_mode)
-    return SpectrumFitResult(spec.temperature_k,model,n_peaks,peaks,x,y,yfit,comps,baseline,resid,float(r2),float(adj),rmse,red,aic,aicc,bic,warnings,baseline_mode)
+    result = SpectrumFitResult(
+        spec.temperature_k,
+        model,
+        n_peaks,
+        peaks,
+        x,
+        y,
+        yfit,
+        comps,
+        baseline,
+        resid,
+        float(r2),
+        float(adj),
+        rmse,
+        red,
+        aic,
+        aicc,
+        bic,
+        warnings,
+        baseline_mode,
+    )
+    return capture_fit_settings(
+        result,
+        spec,
+        requested_model=model,
+        requested_n_peaks=n_peaks,
+        baseline_mode=baseline_mode,
+        jacobian_corrected=use_jacobian,
+        instrument_fwhm_mev=instrument_fwhm_mev,
+        automatic_model_selection=False,
+    )
 
 
 def build_fit_curve_data(result: SpectrumFitResult) -> FitCurveData:
